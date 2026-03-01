@@ -66,7 +66,7 @@ def webhook():
 # Get events with time filtering
 @app.route("/events")
 def get_events():
-    minutes = request.args.get("minutes", 10)
+    minutes = request.args.get("minutes", 2000)
     minutes = int(minutes)
 
     current_time = datetime.utcnow()
