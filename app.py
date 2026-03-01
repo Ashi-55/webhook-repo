@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify, render_template
 from pymongo import MongoClient
 from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 
-# MongoDB connection
-MONGO_URI = "mongodb+srv://techuser:Tech1234@cluster0.6ktxk2w.mongodb.net/?appName=Cluster0"
+# MongoDB connection (use environment variable)
+MONGO_URI = os.getenv("MONGO_URI")
 
 client = MongoClient(MONGO_URI)
 db = client["webhookDB"]
@@ -21,7 +22,6 @@ def webhook():
     data = request.json
     event_type = request.headers.get("X-GitHub-Event")
 
-    # Common fields
     request_id = None
     author = None
     action = None
@@ -30,15 +30,20 @@ def webhook():
 
     # PUSH event
     if event_type == "push":
+
         request_id = data.get("after")
         author = data.get("pusher", {}).get("name")
+
+        ref = data.get("ref", "")
+        if ref:
+            to_branch = ref.split("/")[-1]
+
         action = "PUSH"
-        to_branch = data.get("ref").split("/")[-1]
 
     # PULL REQUEST event
     elif event_type == "pull_request":
 
-        pr = data.get("pull_request")
+        pr = data.get("pull_request", {})
 
         request_id = pr.get("id")
         author = pr.get("user", {}).get("login")
@@ -87,7 +92,9 @@ def get_events():
 
     for event in events:
 
-        formatted_time = event["timestamp"].strftime("%d %B %Y - %I:%M %p UTC")
+        formatted_time = event["timestamp"].strftime(
+            "%d %B %Y - %I:%M %p UTC"
+        )
 
         if event["action"] == "PUSH":
             message = f'{event["author"]} pushed to {event["to_branch"]} on {formatted_time}'
@@ -97,6 +104,9 @@ def get_events():
 
         elif event["action"] == "MERGE":
             message = f'{event["author"]} merged branch {event["from_branch"]} to {event["to_branch"]} on {formatted_time}'
+
+        else:
+            continue
 
         result.append(message)
 
