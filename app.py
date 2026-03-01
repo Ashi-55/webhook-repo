@@ -1,105 +1,111 @@
 from flask import Flask, request, jsonify, render_template
-import sqlite3
+from pymongo import MongoClient
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
-DATABASE = "events.db"
+
+# MongoDB connection
+MONGO_URI = "mongodb+srv://techuser:Tech1234@cluster0.6ktxk2w.mongodb.net/?appName=Cluster0"
+
+client = MongoClient(MONGO_URI)
+db = client["webhookDB"]
+collection = db["events"]
 
 
-# Create database table
-def init_db():
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT,
-            repo_name TEXT,
-            branch TEXT,
-            author TEXT,
-            timestamp TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
+# ------------------------------------
 # Webhook endpoint
+# ------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     data = request.json
     event_type = request.headers.get("X-GitHub-Event")
 
-    repo_name = data.get("repository", {}).get("full_name")
-    branch = data.get("ref")
-    author = data.get("sender", {}).get("login")
+    # Common fields
+    request_id = None
+    author = None
+    action = None
+    from_branch = None
+    to_branch = None
 
-    # Check for merged pull request
-    if event_type == "pull_request":
-        action = data.get("action")
-        merged = data.get("pull_request", {}).get("merged")
+    # PUSH event
+    if event_type == "push":
+        request_id = data.get("after")
+        author = data.get("pusher", {}).get("name")
+        action = "PUSH"
+        to_branch = data.get("ref").split("/")[-1]
 
-        if action == "closed" and merged:
-            event_type = "merge"
+    # PULL REQUEST event
+    elif event_type == "pull_request":
 
-    timestamp = datetime.utcnow().isoformat()
+        pr = data.get("pull_request")
 
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
+        request_id = pr.get("id")
+        author = pr.get("user", {}).get("login")
+        from_branch = pr.get("head", {}).get("ref")
+        to_branch = pr.get("base", {}).get("ref")
 
-    cursor.execute("""
-        INSERT INTO events (event_type, repo_name, branch, author, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    """, (event_type, repo_name, branch, author, timestamp))
+        # check if merged
+        if data.get("action") == "closed" and pr.get("merged"):
+            action = "MERGE"
+        else:
+            action = "PULL_REQUEST"
 
-    conn.commit()
-    conn.close()
+    else:
+        return jsonify({"message": "Event ignored"}), 200
 
-    return jsonify({"status": "event stored"}), 200
+    timestamp = datetime.utcnow()
+
+    event_data = {
+        "request_id": request_id,
+        "author": author,
+        "action": action,
+        "from_branch": from_branch,
+        "to_branch": to_branch,
+        "timestamp": timestamp
+    }
+
+    collection.insert_one(event_data)
+
+    return jsonify({"message": "Event stored"}), 200
 
 
-# Get events with time filtering
+# ------------------------------------
+# Get events (last X minutes)
+# ------------------------------------
 @app.route("/events")
 def get_events():
-    minutes = request.args.get("minutes", 2000)
-    minutes = int(minutes)
 
-    current_time = datetime.utcnow()
-    time_limit = current_time - timedelta(minutes=minutes)
+    minutes = int(request.args.get("minutes", 10))
+    time_limit = datetime.utcnow() - timedelta(minutes=minutes)
 
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
+    events = collection.find(
+        {"timestamp": {"$gte": time_limit}}
+    ).sort("timestamp", -1)
 
-    cursor.execute("""
-        SELECT event_type, repo_name, branch, author, timestamp
-        FROM events
-        WHERE timestamp >= ?
-        ORDER BY timestamp DESC
-    """, (time_limit.isoformat(),))
+    result = []
 
-    rows = cursor.fetchall()
-    conn.close()
+    for event in events:
 
-    events = []
+        formatted_time = event["timestamp"].strftime("%d %B %Y - %I:%M %p UTC")
 
-    for row in rows:
-        events.append({
-            "event_type": row[0],
-            "repo": row[1],
-            "branch": row[2],
-            "author": row[3],
-            "timestamp": row[4]
-        })
+        if event["action"] == "PUSH":
+            message = f'{event["author"]} pushed to {event["to_branch"]} on {formatted_time}'
 
-    return jsonify(events)
+        elif event["action"] == "PULL_REQUEST":
+            message = f'{event["author"]} submitted a pull request from {event["from_branch"]} to {event["to_branch"]} on {formatted_time}'
+
+        elif event["action"] == "MERGE":
+            message = f'{event["author"]} merged branch {event["from_branch"]} to {event["to_branch"]} on {formatted_time}'
+
+        result.append(message)
+
+    return jsonify(result)
 
 
+# ------------------------------------
 # Home page
+# ------------------------------------
 @app.route("/")
 def home():
     return render_template("index.html")
