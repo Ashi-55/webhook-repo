@@ -1,11 +1,14 @@
 from flask import Flask, request, jsonify, render_template
 from pymongo import MongoClient
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import os
 
 app = Flask(__name__)
 
-# MongoDB connection (use environment variable)
+# load environment variable
+load_dotenv()
+
 MONGO_URI = os.getenv("MONGO_URI")
 
 client = MongoClient(MONGO_URI)
@@ -18,6 +21,9 @@ collection = db["events"]
 # ------------------------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
+    if not request.json:
+        return jsonify({"message": "Invalid payload"}), 400
 
     data = request.json
     event_type = request.headers.get("X-GitHub-Event")
@@ -50,7 +56,6 @@ def webhook():
         from_branch = pr.get("head", {}).get("ref")
         to_branch = pr.get("base", {}).get("ref")
 
-        # check if merged
         if data.get("action") == "closed" and pr.get("merged"):
             action = "MERGE"
         else:
@@ -70,7 +75,9 @@ def webhook():
         "timestamp": timestamp
     }
 
-    collection.insert_one(event_data)
+    # prevent duplicate insert
+    if not collection.find_one({"request_id": request_id}):
+        collection.insert_one(event_data)
 
     return jsonify({"message": "Event stored"}), 200
 
